@@ -1,0 +1,47 @@
+{
+  "项目名称": "残特奥赛事保障",
+  "承办城市": ["城市A", "城市B", "城市C"],
+  "参与角色": [
+    "运动员联络员",
+    "赛区调度员",
+    "医学分级人员",
+    "志愿服务负责人",
+    "医疗应急组"
+  ],
+  "个人支持状态": [
+    "待报到",
+    "已分级",
+    "保障中",
+    "需改派",
+    "已离赛"
+  ],
+  "行程段类型": [
+    "checkin（报到）",
+    "classification（医学分级）",
+    "training（训练）",
+    "competition（比赛）",
+    "lodging（住宿）",
+    "transfer（通勤）"
+  ],
+  "资源类型": ["vehicle（车辆）", "room（客房）", "equipment（器材）", "volunteer（志愿者）"],
+  "功能需求码": {
+    "WHEELCHAIR": "全程轮椅通行",
+    "WHEELCHAIR_SPORT": "竞赛轮椅（赛会器材库保障）",
+    "TRANSFER_ASSIST": "转移协助",
+    "VISION_GUIDE": "视障引导",
+    "HEARING_SUPPORT": "听障支持（手语/文字提示）",
+    "INTELLECTUAL_SUPPORT": "智力支持（特奥流程志愿者、陪伴引导）",
+    "SERVICE_ANIMAL": "辅助犬空间",
+    "COMPANION_SEAT": "陪护同车同席（座位计数+1）",
+    "MEDICAL_OXYGEN": "氧气支持",
+    "LIFT_VEHICLE": "升降平台车辆",
+    "GROUND_FLOOR": "低层/电梯直达客房",
+    "BARIATRIC": "加宽承重支持"
+  },
+  "隐私边界": [
+    "只登记功能支持所需最少信息，不登记诊断",
+    "诊断类字段（诊断/病历/diagnosis 等）在消息入口直接拒绝",
+    "公众赛程只呈现时间、地点、项目、延时后的新时间，不含任何个人需求"
+  ],
+  "说明": "字段仅用于统一领域称谓；业务记录由 /commands 消息产生，fixtures/seed_messages.json 为首批联调种子。"
+}

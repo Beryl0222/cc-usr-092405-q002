@@ -1,0 +1,42 @@
+[
+  {"message_id": "seed-team-A1", "type": "register_team", "payload": {"team_id": "TA1", "name": "城市A轮椅竞速队", "city": "城市A", "sport": "竞速轮椅", "leader": "张领队"}},
+  {"message_id": "seed-team-B1", "type": "register_team", "payload": {"team_id": "TB1", "name": "城市B盲人门球队", "city": "城市B", "sport": "盲人门球", "leader": "李领队"}},
+  {"message_id": "seed-team-C1", "type": "register_team", "payload": {"team_id": "TC1", "name": "城市C特奥田径队", "city": "城市C", "sport": "田径", "leader": "王领队"}},
+
+  {"message_id": "seed-person-A1", "type": "register_person", "payload": {"person_id": "PA1", "name": "甲（轮椅竞速）", "team_id": "TA1", "city": "城市A", "needs": ["WHEELCHAIR", "WHEELCHAIR_SPORT", "TRANSFER_ASSIST", "COMPANION_SEAT"]}},
+  {"message_id": "seed-person-B1", "type": "register_person", "payload": {"person_id": "PB1", "name": "乙（盲人门球）", "team_id": "TB1", "city": "城市B", "needs": ["VISION_GUIDE", "COMPANION_SEAT"]}},
+  {"message_id": "seed-person-C1", "type": "register_person", "payload": {"person_id": "PC1", "name": "丙（特奥田径）", "team_id": "TC1", "city": "城市C", "needs": ["INTELLECTUAL_SUPPORT", "COMPANION_SEAT"]}},
+
+  {"message_id": "seed-venue-A", "type": "register_venue", "payload": {"venue_id": "VA", "name": "城市A体育中心", "city": "城市A", "features": ["WHEELCHAIR", "TRANSFER_ASSIST", "MEDICAL_OXYGEN"]}},
+  {"message_id": "seed-venue-B", "type": "register_venue", "payload": {"venue_id": "VB", "name": "城市B门球馆", "city": "城市B", "features": ["VISION_GUIDE", "SERVICE_ANIMAL"]}},
+  {"message_id": "seed-venue-C", "type": "register_venue", "payload": {"venue_id": "VC", "name": "城市C田径场", "city": "城市C", "features": ["INTELLECTUAL_SUPPORT"]}},
+
+  {"message_id": "seed-hotel-A", "type": "register_hotel", "payload": {"hotel_id": "HA", "name": "城市A无障碍大酒店", "city": "城市A", "rooms": [
+    {"room_id": "RA1", "features": ["accessible_room", "roll_in_shower", "low_level_access", "companion_bed"]},
+    {"room_id": "RA2", "features": ["accessible_room", "roll_in_shower", "low_level_access", "oxygen_outlet"]}
+  ]}},
+  {"message_id": "seed-hotel-B", "type": "register_hotel", "payload": {"hotel_id": "HB", "name": "城市B门球接待酒店", "city": "城市B", "rooms": [
+    {"room_id": "RB1", "features": ["braille_signage", "companion_bed", "animal_friendly"]}
+  ]}},
+  {"message_id": "seed-hotel-C", "type": "register_hotel", "payload": {"hotel_id": "HC", "name": "城市C特奥接待酒店", "city": "城市C", "rooms": [
+    {"room_id": "RC1", "features": ["companion_bed"]},
+    {"room_id": "RC2", "features": ["accessible_room", "low_level_access"]}
+  ]}},
+
+  {"message_id": "seed-vehicle-A1", "type": "register_vehicle", "payload": {"vehicle_id": "VAC1", "city": "城市A", "kind": "accessible", "features": ["lift", "wheelchair_lock"], "seats": 8}},
+  {"message_id": "seed-vehicle-A2", "type": "register_vehicle", "payload": {"vehicle_id": "VAB1", "city": "城市A", "kind": "commuter", "seats": 45}},
+  {"message_id": "seed-vehicle-B1", "type": "register_vehicle", "payload": {"vehicle_id": "VBB1", "city": "城市B", "kind": "commuter", "seats": 45}},
+  {"message_id": "seed-vehicle-C1", "type": "register_vehicle", "payload": {"vehicle_id": "VCB1", "city": "城市C", "kind": "commuter", "seats": 45}},
+
+  {"message_id": "seed-equip-A1", "type": "register_equipment", "payload": {"item_id": "EA1", "city": "城市A", "eq_type": "sport_wheelchair", "active_until": "2026-12-31T00:00"}},
+  {"message_id": "seed-equip-A2", "type": "register_equipment", "payload": {"item_id": "EA2", "city": "城市A", "eq_type": "oxygen_cylinder", "active_until": "2026-12-31T00:00"}},
+
+  {"message_id": "seed-vol-A1", "type": "register_volunteer", "payload": {"volunteer_id": "VOA1", "name": "城市A志愿者一号", "city": "城市A", "skills": ["wheelchair_handling", "transfer_assist"], "credential_until": "2026-12-31T00:00"}},
+  {"message_id": "seed-vol-A2", "type": "register_volunteer", "payload": {"volunteer_id": "VOA2", "name": "城市A志愿者二号", "city": "城市A", "skills": ["wheelchair_handling", "oxygen_handling"], "credential_until": "2026-12-31T00:00"}},
+  {"message_id": "seed-vol-B1", "type": "register_volunteer", "payload": {"volunteer_id": "VOB1", "name": "城市B引导员一号", "city": "城市B", "skills": ["sighted_guide", "animal_etiquette"], "credential_until": "2026-12-31T00:00"}},
+  {"message_id": "seed-vol-C1", "type": "register_volunteer", "payload": {"volunteer_id": "VOC1", "name": "城市C特奥志愿者一号", "city": "城市C", "skills": ["special_olympics_care"], "credential_until": "2026-12-31T00:00"}},
+
+  {"message_id": "seed-event-A", "type": "register_event", "payload": {"event_id": "EA", "venue_id": "VA", "city": "城市A", "sport": "竞速轮椅", "stage": "competition", "title": "竞速轮椅 决赛", "start": "2026-09-25T14:00", "end": "2026-09-25T16:00", "team_ids": ["TA1"]}},
+  {"message_id": "seed-event-B", "type": "register_event", "payload": {"event_id": "EB", "venue_id": "VB", "city": "城市B", "sport": "盲人门球", "stage": "competition", "title": "盲人门球 小组赛", "start": "2026-09-26T09:00", "end": "2026-09-26T11:00", "team_ids": ["TB1"]}},
+  {"message_id": "seed-event-C", "type": "register_event", "payload": {"event_id": "EC", "venue_id": "VC", "city": "城市C", "sport": "田径", "stage": "training", "title": "特奥田径 融合训练", "start": "2026-09-27T09:00", "end": "2026-09-27T10:30", "team_ids": ["TC1"]}}
+]
