@@ -7,10 +7,12 @@ active_until / credential_until 之后不再参与排程。
 重叠窗口查询 + 事务保证；无障碍车辆的双承诺禁止在引擎层额外强制。
 """
 
+import hashlib
 import json
 import os
 import sqlite3
 import threading
+import uuid
 from datetime import datetime, timedelta, timezone
 
 
@@ -18,14 +20,47 @@ def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _new_id(prefix):
+    return f"{prefix}-{uuid.uuid4().hex[:12]}"
+
+
+def canonical_json(value):
+    """规范化序列化：键排序 + 紧凑分隔，消除等价写法的字节差异。"""
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def digest(value):
+    """规范化载荷/结果的可核验指纹（sha256，十六进制）。"""
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS commands (
-    message_id   TEXT PRIMARY KEY,
-    command_type TEXT NOT NULL,
-    payload      TEXT NOT NULL,
-    response     TEXT,
-    created_at   TEXT NOT NULL
+    message_id      TEXT PRIMARY KEY,
+    command_type    TEXT NOT NULL,
+    payload         TEXT NOT NULL,
+    payload_digest  TEXT NOT NULL,
+    response        TEXT,
+    response_digest TEXT,
+    created_at      TEXT NOT NULL
 );
+
+-- 编号复用冲突：同一 message_id 的第二次投递若类型或规范化载荷不同，
+-- 命令被拒绝执行，但冲突双方的摘要留在这里供值守交接追踪。
+CREATE TABLE IF NOT EXISTS command_conflicts (
+    conflict_id            TEXT PRIMARY KEY,
+    message_id             TEXT NOT NULL,
+    first_command_type     TEXT NOT NULL,
+    first_payload_digest   TEXT NOT NULL,
+    first_response_digest  TEXT,
+    conflict_command_type  TEXT NOT NULL,
+    conflict_payload_digest TEXT NOT NULL,
+    conflict_payload       TEXT NOT NULL,
+    mismatch               TEXT NOT NULL,   -- command_type | payload
+    detected_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cmd_conflicts_message
+    ON command_conflicts(message_id);
 
 CREATE TABLE IF NOT EXISTS teams (
     team_id TEXT PRIMARY KEY,
@@ -210,7 +245,28 @@ class Store:
     def init_db(self):
         with self.lock:
             self.conn.executescript(SCHEMA)
+            self._migrate_command_digests()
             self.conn.commit()
+
+    def _migrate_command_digests(self):
+        """旧库 commands 表没有摘要列：补列并按持久化内容回填。"""
+        cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(commands)")}
+        if "payload_digest" not in cols:
+            self.conn.execute("ALTER TABLE commands ADD COLUMN payload_digest TEXT")
+        if "response_digest" not in cols:
+            self.conn.execute("ALTER TABLE commands ADD COLUMN response_digest TEXT")
+        rows = self.conn.execute(
+            "SELECT message_id, payload, response FROM commands "
+            "WHERE payload_digest IS NULL OR response_digest IS NULL"
+        ).fetchall()
+        for row in rows:
+            payload = self._loads(row["payload"], {})
+            response = self._loads(row["response"], None)
+            self.conn.execute(
+                "UPDATE commands SET payload_digest=?, response_digest=? WHERE message_id=?",
+                (digest(payload), digest(response) if response is not None else None,
+                 row["message_id"]),
+            )
 
     def close(self):
         with self.lock:
@@ -220,7 +276,7 @@ class Store:
 
     @staticmethod
     def _dumps(value):
-        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        return canonical_json(value)
 
     @staticmethod
     def _loads(value, default):
@@ -250,11 +306,42 @@ class Store:
     def save_command(self, message_id, command_type, payload, response):
         with self.lock:
             self.conn.execute(
-                "INSERT OR IGNORE INTO commands(message_id, command_type, payload, response, created_at)"
-                " VALUES(?,?,?,?,?)",
-                (message_id, command_type, self._dumps(payload), self._dumps(response), now_iso()),
+                "INSERT OR IGNORE INTO commands(message_id, command_type, payload,"
+                " payload_digest, response, response_digest, created_at)"
+                " VALUES(?,?,?,?,?,?,?)",
+                (message_id, command_type, canonical_json(payload), digest(payload),
+                 canonical_json(response), digest(response), now_iso()),
             )
             self.conn.commit()
+
+    def record_command_conflict(self, message_id, first, conflict_type, conflict_payload,
+                                mismatch):
+        """保存首次投递与冲突投递的双方摘要（不覆盖首次记录）。"""
+        conflict_id = _new_id("idc")
+        with self.lock:
+            self.conn.execute(
+                "INSERT INTO command_conflicts(conflict_id, message_id,"
+                " first_command_type, first_payload_digest, first_response_digest,"
+                " conflict_command_type, conflict_payload_digest, conflict_payload,"
+                " mismatch, detected_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (conflict_id, message_id, first["command_type"], first["payload_digest"],
+                 first["response_digest"], conflict_type, digest(conflict_payload),
+                 canonical_json(conflict_payload), mismatch, now_iso()),
+            )
+            self.conn.commit()
+        return conflict_id
+
+    def list_command_conflicts(self, message_id=None):
+        if message_id:
+            rows = self.query(
+                "SELECT * FROM command_conflicts WHERE message_id=? ORDER BY detected_at",
+                (message_id,),
+            )
+        else:
+            rows = self.query(
+                "SELECT * FROM command_conflicts ORDER BY detected_at DESC, conflict_id DESC"
+            )
+        return [dict(r) for r in rows]
 
     # ---------- 登记 ----------
 

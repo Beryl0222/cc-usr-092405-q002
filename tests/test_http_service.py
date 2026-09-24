@@ -54,6 +54,72 @@ class HttpContractTest(unittest.TestCase):
         _, second = self._post("/commands", message)
         self.assertTrue(second["deduplicated"])
 
+    def test_reused_id_with_different_payload_is_409_and_not_applied(self):
+        first = {"message_id": "HTTP-IDEM", "type": "register_team",
+                 "payload": {"team_id": "T1", "name": "一队", "city": "城市A",
+                             "sport": "篮球"}}
+        status, _ = self._post("/commands", first)
+        self.assertEqual(status, 200)
+        # 同类型改字段：409 + 可核验摘要
+        changed = dict(first, payload=dict(first["payload"], name="冒名队"))
+        with self.assertRaises(HTTPError) as ctx:
+            self._post("/commands", changed)
+        self.assertEqual(ctx.exception.code, 409)
+        body = json.load(ctx.exception)
+        ctx.exception.close()
+        self.assertTrue(body["conflict"])
+        self.assertEqual(body["mismatch"], "payload")
+        self.assertEqual(body["message_id"], "HTTP-IDEM")
+        self.assertEqual(body["first"]["type"], "register_team")
+        self.assertNotEqual(body["first"]["payload_digest"],
+                           body["rejected"]["payload_digest"])
+        self.assertTrue(body["conflict_id"])
+        # 冲突不毒化后续命令：新编号照常受理
+        status, _ = self._post("/commands", {
+            "message_id": "HTTP-READ", "type": "register_team",
+            "payload": {"team_id": "T-READ", "name": "只读探测", "city": "城市A",
+                        "sport": "田径"}})
+        self.assertEqual(status, 200)
+        # 冲突可经内部接口回看
+        status, conflicts = self._get("/internal/conflicts")
+        self.assertEqual(status, 200)
+        record = next(c for c in conflicts["conflicts"]
+                      if c["message_id"] == "HTTP-IDEM")
+        self.assertEqual(record["conflict_id"], body["conflict_id"])
+        self.assertIn("冒名队", record["conflict_payload"])
+
+    def test_reused_id_with_different_type_is_409(self):
+        message = {"message_id": "HTTP-XTYPE", "type": "register_team",
+                   "payload": {"team_id": "T9", "name": "九队", "city": "城市A",
+                               "sport": "篮球"}}
+        self._post("/commands", message)
+        other = {"message_id": "HTTP-XTYPE", "type": "register_venue",
+                 "payload": {"venue_id": "V9", "name": "九馆", "city": "城市A"}}
+        with self.assertRaises(HTTPError) as ctx:
+            self._post("/commands", other)
+        self.assertEqual(ctx.exception.code, 409)
+        body = json.load(ctx.exception)
+        ctx.exception.close()
+        self.assertEqual(body["mismatch"], "command_type")
+        self.assertEqual(body["first"]["type"], "register_team")
+        self.assertEqual(body["rejected"]["type"], "register_venue")
+
+    def test_identical_redelivery_after_conflict_still_replays_first(self):
+        message = {"message_id": "HTTP-MIX", "type": "register_team",
+                   "payload": {"team_id": "T8", "name": "八队", "city": "城市A",
+                               "sport": "篮球"}}
+        _, first = self._post("/commands", message)
+        with self.assertRaises(HTTPError) as ctx:
+            self._post("/commands", dict(message, type="register_hotel",
+                                         payload={"hotel_id": "H8", "name": "酒店",
+                                                  "city": "城市A"}))
+        self.assertEqual(ctx.exception.code, 409)
+        ctx.exception.close()
+        # 冲突之后，完全相同的消息仍回放首次结果——两种结论并存且稳定
+        _, replay = self._post("/commands", message)
+        self.assertTrue(replay["deduplicated"])
+        self.assertEqual(replay["result"], first["result"])
+
     def test_validation_error_is_400_not_crash(self):
         with self.assertRaises(HTTPError) as ctx:
             self._post("/commands", {"message_id": "HTTP-BAD",
@@ -77,7 +143,8 @@ class HttpContractTest(unittest.TestCase):
     def test_internal_routes_exist(self):
         for path in ("/internal/changes", "/internal/notifications",
                      "/internal/gaps", "/internal/handoffs",
-                     "/internal/utilization", "/internal/continuity"):
+                     "/internal/utilization", "/internal/continuity",
+                     "/internal/conflicts"):
             status, _ = self._get(path)
             self.assertEqual(status, 200, path)
 

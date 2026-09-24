@@ -1,11 +1,64 @@
-"""命令消息处理：统一入口 + message_id 幂等。
+"""命令消息处理：统一入口 + message_id 幂等契约。
 
-三地赛程在重复消息和服务重启中运行：同一条消息（相同 message_id）
-无论投递多少次、进程是否重启过，都只生效一次，并返回首次结果。
+三地赛程在重复消息和服务重启中运行。message_id 是命令的业务身份，
+幂等语义是一份可核验的契约：
+
+* 完全相同的消息（相同 message_id、相同命令类型、相同*规范化*载荷）
+  无论投递多少次、进程是否重启过、是否并发到达，都只生效一次，
+  并原样返回首次结果（带 deduplicated 标记）；
+* 同一 message_id 若被另一条命令复用——命令类型不同，或规范化载荷
+  （键序/空白等无关差异归一化后）不同——以冲突响应拒绝，新命令
+  绝不执行，因而不会产生任何部分资源分配；首次结果与冲突双方摘要
+  落 command_conflicts 表，供值守交接追踪。
 """
 
 from . import catalog
 from .catalog import ValidationError
+from .store import digest
+
+# 摘要对外只展示前 12 位：足以核对，又不把完整载荷指纹铺在接口里。
+DIGEST_PREFIX = 12
+
+
+class MessageConflictError(ValueError):
+    """消息编号被另一条不同命令复用（HTTP 409）。"""
+
+    def __init__(self, conflict_id, message_id, mismatch, first_type, first_payload_digest,
+                 first_response_digest, conflict_type, conflict_payload_digest):
+        self.conflict_id = conflict_id
+        self.message_id = message_id
+        self.mismatch = mismatch  # command_type | payload
+        self.first_type = first_type
+        self.first_payload_digest = first_payload_digest
+        self.first_response_digest = first_response_digest
+        self.conflict_type = conflict_type
+        self.conflict_payload_digest = conflict_payload_digest
+        differing = "命令类型" if mismatch == "command_type" else "规范化载荷"
+        super().__init__(
+            f"消息编号 {message_id} 已被另一条命令占用（{differing}不一致）："
+            f"首次={first_type}/{first_payload_digest[:DIGEST_PREFIX]}，"
+            f"本次={conflict_type}/{conflict_payload_digest[:DIGEST_PREFIX]}；"
+            "编号不可复用，本次命令未执行，首次结果保持有效"
+        )
+
+    def payload(self):
+        """HTTP 冲突响应体。"""
+        return {
+            "error": str(self),
+            "conflict": True,
+            "conflict_id": self.conflict_id,
+            "message_id": self.message_id,
+            "mismatch": self.mismatch,
+            "first": {
+                "type": self.first_type,
+                "payload_digest": self.first_payload_digest,
+                "response_digest": self.first_response_digest,
+            },
+            "rejected": {
+                "type": self.conflict_type,
+                "payload_digest": self.conflict_payload_digest,
+            },
+        }
 
 
 class CommandHandler:
@@ -26,17 +79,41 @@ class CommandHandler:
         if not isinstance(payload, dict):
             raise ValidationError("payload 必须是对象")
 
-        # 与调度共用同一把锁：并发重复消息时"查重→执行→落库"原子完成
+        # 与调度共用同一把锁：并发到达时"查首次记录→比对契约→执行/拒绝
+        # →落库"原子完成，同一编号不可能有两条命令都被执行。
         with self.store.lock:
-            duplicate = self.store.get_command(message_id)
-            if duplicate is not None:
-                return self.store._loads(duplicate["response"], {}) | {"deduplicated": True}
-
+            # 诊断类字段在入口直接拒绝（含冲突重投），绝不进入任何一张表。
+            # 已受理消息不可能含此类字段，故不影响相同消息的回放。
             catalog.reject_diagnosis(payload)
+
+            first = self.store.get_command(message_id)
+            if first is not None:
+                return self._replay_or_reject(first, message_id, cmd_type, payload)
+
             result = self._dispatch(cmd_type, payload)
             result = {"type": cmd_type, "message_id": message_id, "result": result}
             self.store.save_command(message_id, cmd_type, payload, result)
             return result
+
+    def _replay_or_reject(self, first, message_id, cmd_type, payload):
+        """命中已用编号：相同消息回放首结果，不同消息拒绝并留冲突摘要。"""
+        first_digest = first["payload_digest"] or digest(
+            self.store._loads(first["payload"], {})
+        )
+        new_digest = digest(payload)
+        if first["command_type"] == cmd_type and first_digest == new_digest:
+            return self.store._loads(first["response"], {}) | {"deduplicated": True}
+
+        mismatch = "command_type" if first["command_type"] != cmd_type else "payload"
+        conflict_id = self.store.record_command_conflict(
+            message_id, first, cmd_type, payload, mismatch,
+        )
+        # 记录完冲突才抛错：新命令从未分发，不会产生任何资源分配。
+        raise MessageConflictError(
+            conflict_id, message_id, mismatch,
+            first["command_type"], first_digest, first["response_digest"],
+            cmd_type, new_digest,
+        )
 
     # ------------------------------------------------------------------
 

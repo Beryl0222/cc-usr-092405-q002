@@ -86,6 +86,10 @@ class Views:
         rows = self.store.list_notifications()
         return {"notifications": [dict(r) for r in rows]}
 
+    def command_conflicts(self, message_id=None):
+        """消息编号复用冲突：首次与冲突双方的摘要，供值守交接追踪。"""
+        return {"conflicts": self.store.list_command_conflicts(message_id=message_id)}
+
     def open_gaps(self, city=None):
         rows = self.store.list_open_gaps(city=city)
         return {"gaps": [dict(r) for r in rows]}

@@ -11,6 +11,7 @@
   GET  /internal/segments/<id> 行程段明细（含资源承诺）
   GET  /internal/utilization   车辆承诺时间线（核对无双占）
   GET  /internal/continuity    跨城交接断档检测
+  GET  /internal/conflicts     消息编号复用冲突（首次与冲突摘要，供交接追踪）
 """
 
 import argparse
@@ -21,6 +22,7 @@ from urllib.parse import parse_qs, urlparse
 
 from support.app import App, SERVICE_ID, SERVICE_NAME
 from support.catalog import ValidationError
+from support.messages import MessageConflictError
 
 DEFAULT_DB = os.environ.get("PARA_EVENT_DB", os.path.join("data", "para_event.db"))
 
@@ -98,6 +100,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(app.views.resource_utilization(city=query.get("city")))
             elif path == "/internal/continuity":
                 self._send_json({"broken_handoffs": app.engine.handoff_continuity()})
+            elif path == "/internal/conflicts":
+                self._send_json(
+                    app.views.command_conflicts(message_id=query.get("message_id")))
             elif path.startswith("/internal/segments/"):
                 segment_id = path.rsplit("/", 1)[1]
                 detail = app.views.segment_detail(segment_id)
@@ -120,6 +125,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(app.commands.handle(data))
             else:
                 self.send_error(404)
+        except MessageConflictError as exc:
+            # 编号复用冲突：409 + 可核验的双方摘要；新命令未执行
+            self._send_json(exc.payload(), status=409)
         except ValidationError as exc:
             self._send_json({"error": str(exc)}, status=400)
 
