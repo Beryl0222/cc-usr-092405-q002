@@ -54,6 +54,31 @@ class HttpContractTest(unittest.TestCase):
         _, second = self._post("/commands", message)
         self.assertTrue(second["deduplicated"])
 
+    def test_message_id_reuse_conflict_is_409(self):
+        message = {"message_id": "HTTP-C1", "type": "register_team",
+                   "payload": {"team_id": "TC1", "name": "一队", "city": "城市A",
+                               "sport": "篮球"}}
+        status, _ = self._post("/commands", message)
+        self.assertEqual(status, 200)
+        # 同一编号配给另一条命令：409 冲突，携带首次/冲突摘要
+        changed = {"message_id": "HTTP-C1", "type": "register_team",
+                   "payload": {"team_id": "TC1", "name": "改名", "city": "城市A",
+                               "sport": "篮球"}}
+        with self.assertRaises(HTTPError) as ctx:
+            self._post("/commands", changed)
+        self.assertEqual(ctx.exception.code, 409)
+        body = json.load(ctx.exception)
+        ctx.exception.close()
+        self.assertEqual(body["first_type"], "register_team")
+        self.assertIn("conflict_payload_summary", body)
+        # 冲突台账可经内部端点回看（交接追踪）
+        status, conflicts = self._get("/internal/conflicts")
+        self.assertEqual(status, 200)
+        self.assertTrue(any(c["message_id"] == "HTTP-C1"
+                            for c in conflicts["conflicts"]))
+        # 被冲突的命令没有生效
+        self.assertEqual(self.app.store.get_team("TC1")["name"], "一队")
+
     def test_validation_error_is_400_not_crash(self):
         with self.assertRaises(HTTPError) as ctx:
             self._post("/commands", {"message_id": "HTTP-BAD",

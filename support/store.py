@@ -7,10 +7,12 @@ active_until / credential_until 之后不再参与排程。
 重叠窗口查询 + 事务保证；无障碍车辆的双承诺禁止在引擎层额外强制。
 """
 
+import hashlib
 import json
 import os
 import sqlite3
 import threading
+import uuid
 from datetime import datetime, timedelta, timezone
 
 
@@ -18,14 +20,38 @@ def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _new_id(prefix):
+    return f"{prefix}-{uuid.uuid4().hex[:12]}"
+
+
+def fingerprint(text):
+    """业务契约指纹：对规范化载荷文本取稳定哈希。"""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS commands (
-    message_id   TEXT PRIMARY KEY,
-    command_type TEXT NOT NULL,
-    payload      TEXT NOT NULL,
-    response     TEXT,
-    created_at   TEXT NOT NULL
+    message_id      TEXT PRIMARY KEY,
+    command_type    TEXT NOT NULL,
+    payload         TEXT NOT NULL,           -- 规范化后的业务载荷（业务契约指纹）
+    payload_summary TEXT NOT NULL,           -- 载荷指纹（sha256），用于快速核验
+    response        TEXT,
+    created_at      TEXT NOT NULL
 );
+
+-- 同一 message_id 被复用为另一条命令时的冲突台账：
+-- 首次命令摘要与每次冲突摘要都持久化，供值守交接追踪。
+CREATE TABLE IF NOT EXISTS command_conflicts (
+    conflict_id    TEXT PRIMARY KEY,
+    message_id     TEXT NOT NULL,
+    first_type     TEXT NOT NULL,
+    first_summary  TEXT NOT NULL,
+    first_seen_at  TEXT NOT NULL,
+    conflict_type  TEXT NOT NULL,
+    conflict_summary TEXT NOT NULL,
+    detected_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conflict_message ON command_conflicts(message_id);
 
 CREATE TABLE IF NOT EXISTS teams (
     team_id TEXT PRIMARY KEY,
@@ -210,7 +236,25 @@ class Store:
     def init_db(self):
         with self.lock:
             self.conn.executescript(SCHEMA)
+            self._migrate()
             self.conn.commit()
+
+    def _migrate(self):
+        """对早期库补齐后加列（幂等）。"""
+        columns = {r["name"] for r in self.conn.execute("PRAGMA table_info(commands)")}
+        if "payload_summary" not in columns:
+            self.conn.execute(
+                "ALTER TABLE commands ADD COLUMN payload_summary TEXT"
+            )
+            # 旧库载荷重新规范化（消除历史 JSON 空白差异），保证升级后
+            # 同一消息重投仍能命中 replay，而不会被误判为冲突。
+            from .messages import canonical_text
+            for row in self.conn.execute("SELECT message_id, payload FROM commands"):
+                text = canonical_text(json.loads(row["payload"]))
+                self.conn.execute(
+                    "UPDATE commands SET payload=?, payload_summary=? WHERE message_id=?",
+                    (text, fingerprint(text), row["message_id"]),
+                )
 
     def close(self):
         with self.lock:
@@ -242,19 +286,47 @@ class Store:
         with self.lock:
             return self.conn.execute(sql, params).fetchone()
 
-    # ---------- 幂等 ----------
+    # ---------- 幂等与命令契约 ----------
 
     def get_command(self, message_id):
         return self.query_one("SELECT * FROM commands WHERE message_id=?", (message_id,))
 
-    def save_command(self, message_id, command_type, payload, response):
+    def save_command(self, message_id, command_type, canonical_payload, response,
+                     payload_summary=None):
+        """登记首次命令及其业务契约指纹（canonical_payload 为规范化后的载荷文本）。"""
         with self.lock:
             self.conn.execute(
-                "INSERT OR IGNORE INTO commands(message_id, command_type, payload, response, created_at)"
-                " VALUES(?,?,?,?,?)",
-                (message_id, command_type, self._dumps(payload), self._dumps(response), now_iso()),
+                "INSERT OR IGNORE INTO commands(message_id, command_type, payload,"
+                " payload_summary, response, created_at) VALUES(?,?,?,?,?,?)",
+                (message_id, command_type, canonical_payload,
+                 payload_summary or fingerprint(canonical_payload),
+                 self._dumps(response), now_iso()),
             )
             self.conn.commit()
+
+    def record_command_conflict(self, message_id, first_type, first_summary,
+                              conflict_type, conflict_summary):
+        """记录一次 message_id 复用冲突（不覆盖首次结果），供交接追踪。"""
+        conflict_id = _new_id("conflict")
+        ts = now_iso()
+        with self.lock:
+            self.conn.execute(
+                "INSERT INTO command_conflicts(conflict_id, message_id, first_type,"
+                " first_summary, first_seen_at, conflict_type, conflict_summary,"
+                " detected_at) VALUES(?,?,?,?,?,?,?,?)",
+                (conflict_id, message_id, first_type, first_summary, ts,
+                 conflict_type, conflict_summary, ts),
+            )
+            self.conn.commit()
+        return conflict_id
+
+    def list_command_conflicts(self, message_id=None):
+        if message_id:
+            return self.query(
+                "SELECT * FROM command_conflicts WHERE message_id=? ORDER BY detected_at",
+                (message_id,),
+            )
+        return self.query("SELECT * FROM command_conflicts ORDER BY detected_at")
 
     # ---------- 登记 ----------
 

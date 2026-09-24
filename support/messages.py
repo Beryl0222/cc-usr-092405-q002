@@ -1,11 +1,55 @@
-"""命令消息处理：统一入口 + message_id 幂等。
+"""命令消息处理：统一入口 + message_id 业务契约幂等。
 
-三地赛程在重复消息和服务重启中运行：同一条消息（相同 message_id）
-无论投递多少次、进程是否重启过，都只生效一次，并返回首次结果。
+三地调度消息会离线补传，同一条消息（相同 message_id）可能被投递多次，
+也可能因网关配置错误把已用过的 message_id 配给了另一条命令。契约：
+
+* message_id 相同、命令类型与*规范化载荷*也相同 —— 业务上的同一条命令，
+  无论投递多少次（并发、重启后）都只生效一次，返回首次结果（replay）；
+* message_id 相同但命令类型或规范化载荷不同 —— 判定为编号复用冲突，
+  返回 409 冲突响应，绝不执行第二条、绝不产生任何资源分配，
+  并把首次摘要与本次冲突摘要落台账，供值守人员交接追踪。
+
+注意：业务校验失败（含引擎拒绝）的消息不登记首次结果，允许发送端修正后
+用同一 message_id 重投；这不是冲突。
 """
+
+import json
 
 from . import catalog
 from .catalog import ValidationError
+from .store import fingerprint
+
+
+class CommandConflict(ValueError):
+    """message_id 已被另一条命令（不同类型或载荷）占用。"""
+
+    def __init__(self, message_id, first_type, first_summary,
+                 conflict_type, conflict_summary, conflict_id):
+        super().__init__(f"消息编号 {message_id} 已用于另一条命令，拒绝复用")
+        self.body = {
+            "error": f"消息编号 {message_id} 已用于另一条命令，拒绝复用",
+            "message_id": message_id,
+            "first_type": first_type,
+            "first_payload_summary": first_summary,
+            "conflict_type": conflict_type,
+            "conflict_payload_summary": conflict_summary,
+            "conflict_id": conflict_id,
+        }
+
+
+def _canonical_value(value):
+    """规范化单个值：dict 按键排序，list 保持顺序，其余原样。"""
+    if isinstance(value, dict):
+        return {k: _canonical_value(value[k]) for k in sorted(value)}
+    if isinstance(value, list):
+        return [_canonical_value(v) for v in value]
+    return value
+
+
+def canonical_text(payload):
+    """规范化载荷文本：sort_keys 递归排序，消除键序差异，保留值与数组顺序。"""
+    return json.dumps(_canonical_value(payload), ensure_ascii=False,
+                      sort_keys=True, separators=(",", ":"))
 
 
 class CommandHandler:
@@ -25,17 +69,37 @@ class CommandHandler:
         payload = message.get("payload", {})
         if not isinstance(payload, dict):
             raise ValidationError("payload 必须是对象")
+        catalog.reject_diagnosis(payload)
 
-        # 与调度共用同一把锁：并发重复消息时"查重→执行→落库"原子完成
+        canonical = canonical_text(payload)
+        incoming_summary = fingerprint(canonical)
+
+        # 与调度共用同一把锁：并发到达时"查契约→裁决→执行→落库"原子完成，
+        # 因而并发的重复/冲突消息之间也不会穿插资源分配。
         with self.store.lock:
-            duplicate = self.store.get_command(message_id)
-            if duplicate is not None:
-                return self.store._loads(duplicate["response"], {}) | {"deduplicated": True}
+            seen = self.store.get_command(message_id)
+            if seen is not None:
+                if seen["command_type"] == cmd_type and \
+                        seen["payload_summary"] == incoming_summary:
+                    # 业务上的同一条命令：返回首次结果，不再次生效
+                    return self.store._loads(seen["response"], {}) | {
+                        "deduplicated": True, "outcome": "replay",
+                    }
+                # message_id 被复用为另一条命令：拒绝执行，登记冲突
+                conflict_id = self.store.record_command_conflict(
+                    message_id,
+                    seen["command_type"], seen["payload_summary"],
+                    cmd_type, incoming_summary,
+                )
+                raise CommandConflict(
+                    message_id, seen["command_type"], seen["payload_summary"],
+                    cmd_type, incoming_summary, conflict_id,
+                )
 
-            catalog.reject_diagnosis(payload)
             result = self._dispatch(cmd_type, payload)
             result = {"type": cmd_type, "message_id": message_id, "result": result}
-            self.store.save_command(message_id, cmd_type, payload, result)
+            self.store.save_command(message_id, cmd_type, canonical, result,
+                                   payload_summary=incoming_summary)
             return result
 
     # ------------------------------------------------------------------
